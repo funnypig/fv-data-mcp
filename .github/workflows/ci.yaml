@@ -1,0 +1,28 @@
+name: CI
+on:
+  push:
+  pull_request:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.7.0'
+          enable-cache: true
+      - run: uv sync --frozen
+      - run: uv run ruff check . && uv run ruff format --check .
+      - run: uv run pytest --cov=fv_data_mcp --cov-report=term-missing --cov-fail-under=80
+      - run: uv run pip-audit --local
+      - run: az bicep build --file infra/foundation.bicep --outfile /tmp/foundation.json && az bicep build --file infra/app.bicep --outfile /tmp/app.json
+      - run: docker build -t fv-data-mcp:test .
+      - uses: aquasecurity/trivy-action@0.33.1
+        with:
+          image-ref: fv-data-mcp:test
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'

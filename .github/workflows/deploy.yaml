@@ -1,0 +1,57 @@
+name: Deploy
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+jobs:
+  verify:
+    uses: ./.github/workflows/ci.yaml
+  deploy:
+    needs: verify
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    runs-on: ubuntu-latest
+    env:
+      RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+      PREFIX: ${{ vars.RESOURCE_PREFIX }}
+      AUTH0_ISSUER: ${{ vars.AUTH0_ISSUER }}
+      REGISTRY: ${{ vars.AZURE_REGISTRY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Build immutable release
+        run: |
+          set -euo pipefail
+          az acr build --registry "$REGISTRY" --image "fv-data-mcp:$GITHUB_SHA" .
+          DIGEST=$(az acr repository show --name "$REGISTRY" --image "fv-data-mcp:$GITHUB_SHA" --query digest -o tsv)
+          echo "IMAGE_DIGEST=$DIGEST" >> "$GITHUB_ENV"
+          SERVER=$(az acr show --name "$REGISTRY" --query loginServer -o tsv)
+          echo "IMAGE_REF=$SERVER/fv-data-mcp@$DIGEST" >> "$GITHUB_ENV"
+          az acr login --name "$REGISTRY"
+          docker pull "$SERVER/fv-data-mcp@$DIGEST"
+      - name: Scan the exact release digest
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          image-ref: ${{ env.IMAGE_REF }}
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+      - name: Preview
+        run: az deployment group what-if -g "$RESOURCE_GROUP" -f infra/app.bicep -p prefix="$PREFIX" auth0Issuer="$AUTH0_ISSUER" imageDigest="$IMAGE_DIGEST"
+      - name: Deploy
+        run: az deployment group create -g "$RESOURCE_GROUP" -f infra/app.bicep -p prefix="$PREFIX" auth0Issuer="$AUTH0_ISSUER" imageDigest="$IMAGE_DIGEST" --name "release-${GITHUB_RUN_ID}"
+      - name: Smoke test metadata and authentication boundary
+        run: |
+          set -euo pipefail
+          HOST=$(az containerapp show -g "$RESOURCE_GROUP" -n "$PREFIX-mcp" --query properties.configuration.ingress.fqdn -o tsv)
+          curl --fail --retry 5 --retry-all-errors "https://$HOST/.well-known/oauth-protected-resource" | jq -e --arg expected "https://$HOST/mcp" '.resource == $expected'
+          STATUS=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "https://$HOST/mcp")
+          test "$STATUS" = 401
