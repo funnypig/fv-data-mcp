@@ -20,7 +20,7 @@ jobs:
       - run: uv run pip-audit --local
       - run: az bicep build --file infra/foundation.bicep --outfile /tmp/foundation.json && az bicep build --file infra/app.bicep --outfile /tmp/app.json
       - run: docker build -t fv-data-mcp:test .
-      - uses: aquasecurity/trivy-action@0.33.1
+      - uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: fv-data-mcp:test
           severity: CRITICAL,HIGH
