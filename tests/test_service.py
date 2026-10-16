@@ -36,22 +36,27 @@ def market_transport() -> tuple[httpx.MockTransport, Counter[str]]:
         path = request.url.path
         calls[path] += 1
         if path == "/export/options":
+            if "e" not in request.url.params:
+                return httpx.Response(
+                    200,
+                    text="Contract Name,Expiry\nTEST270115C00100000,1/15/2027\nTEST270219C00100000,2/19/2027\n",
+                )
             expiration = date.fromisoformat(request.url.params["e"])
             code = expiration.strftime("%y%m%d")
             return httpx.Response(
                 200,
                 text=f"Contract Name,Strike,Type,Open Int.,Bid,Ask,Volume,IV,Delta,Gamma\nTEST{code}C00100000,100,call,100,1,1.1,50,0.3,0.5,0.02\nTEST{code}P00110000,110,put,50,1,1.1,20,0.4,-0.5,0.01\n",
             )
-        if path == "/quote_export.ashx":
-            return httpx.Response(200, text=f"Date,Close\n{utc_now().isoformat()},100\n")
-        if path == "/quote.ashx":
+        if path == "/quote_export":
+            return httpx.Response(200, text="Date,Close\n10/13/2026 10:00 AM,100\n")
+        if path == "/export":
             return httpx.Response(
                 200,
-                text='<select name="e"><option value="2027-01-15">Jan</option><option value="2027-02-19">Feb</option></select><table class="snapshot-table2"><tr><td>Dividend Est.</td><td>0.00 (0.00%)</td></tr><tr><td>P/E</td><td>20</td></tr></table><div class="quote_profile-bio">Test company</div>',
+                text="Ticker,Company,P/E,Dividend Yield\nTEST,Test company,20,0.00%\n",
             )
-        if path == "/api/statement.ashx":
+        if path == "/api/statement":
             return httpx.Response(200, json={"data": {"revenue": [100, 120]}})
-        if path == "/news_export.ashx":
+        if path == "/news_export":
             return httpx.Response(
                 200, text="Title,Date,Url\nTest headline,2026-10-13,https://example.com/story\n"
             )
@@ -113,10 +118,12 @@ async def test_all_option_tools_share_api_fetches_and_snapshot_pages(
         assert gamma["data"]["gamma_flip"]["status"] != "unavailable"
         assert calls["/export/options"] == 1
         await call("list_option_expirations", {"ticker": "TEST"})
+        await call("get_max_pain", {"ticker": "TEST"})
+        assert calls["/export/options"] == 2
         summary = await call("get_options_summary", {"ticker": "TEST"})
         assert len(summary["data"]["expirations"]) == 2
-        assert calls["/export/options"] == 2
-        assert calls["/quote_export.ashx"] == 1
+        assert calls["/export/options"] == 3
+        assert calls["/quote_export"] == 1
         await call("get_stock_overview", {"ticker": "TEST"})
         await call("get_financial_statements", {"ticker": "TEST"})
         stock_news = await call("get_stock_news", {"ticker": "TEST"})

@@ -18,8 +18,8 @@ from fv_data_mcp.providers.parsing import (
     csv_records,
     number,
     parse_chain,
-    parse_expirations,
-    parse_overview,
+    parse_export_expirations,
+    parse_overview_export,
 )
 from fv_data_mcp.retry import RetryableFailure, RetryPolicy, retry_async
 
@@ -37,6 +37,8 @@ OVERVIEW_CACHE_SECONDS = 3600
 MAX_FUTURE_BAR_SKEW_MINUTES = 5
 MAX_NEWS_ITEMS = 200
 MAX_HEADLINE_CHARACTERS = 1000
+SCREENER_OVERVIEW_VIEW = "111"
+SCREENER_FINANCIAL_VIEW = "161"
 FINVIZ_RETRY_POLICY = RetryPolicy(
     max_attempts=2,
     base_delay_seconds=0.3,
@@ -173,9 +175,15 @@ class FinvizProvider:
     async def _check_status(self, response: httpx.Response) -> None:
         """Classify HTTP failures and publish server-directed account cooldowns."""
         status = response.status_code
-        if status in {401, 403} or 300 <= status < 400:
+        if status in {401, 403}:
             raise ResearchError(
-                "provider_auth_failed", "Finviz rejected the configured account credentials."
+                "provider_auth_failed",
+                "Finviz denied access to this endpoint. Check account credentials and dataset entitlement.",
+            )
+        if 300 <= status < 400:
+            raise ResearchError(
+                "provider_endpoint_changed",
+                "Finviz redirected this endpoint. Redirects are blocked to protect credentials; the provider adapter needs updating.",
             )
         if status == 404:
             raise ResearchError("not_found", "Finviz did not find the requested dataset.")
@@ -225,8 +233,8 @@ class FinvizProvider:
 
         async def load() -> Payload:
             """Extract listed dates and exclude expirations already past session close."""
-            raw = await self._get("/quote.ashx", {"t": ticker, "ty": "oc"})
-            dates = parse_expirations(raw.data["body"])
+            raw = await self._get("/export/options", {"t": ticker, "ty": "oc"})
+            dates = parse_export_expirations(raw.data["body"], ticker)
             available = []
             for expiration in dates:
                 if expiration >= today and expiry_time(expiration) > utc_now():
@@ -234,7 +242,7 @@ class FinvizProvider:
             return Payload({"ticker": ticker, "expirations": available}, fetched_at=raw.fetched_at)
 
         return await self.cache.fetch(
-            "expirations",
+            "expirations_export",
             {"ticker": ticker, "market_date": today.isoformat()},
             load,
             DAILY_DATASET_SECONDS,
@@ -245,18 +253,27 @@ class FinvizProvider:
         """Return the cached company overview and indicated dividend yield."""
 
         async def load() -> Payload:
-            """Parse the company snapshot without equating retrieval and publication times."""
-            raw = await self._get("/quote.ashx", {"t": ticker, "p": "d"})
+            """Combine authenticated screener exports without accessing browser-only pages."""
+            overview, financial = await asyncio.gather(
+                self._get("/export", {"t": ticker, "v": SCREENER_OVERVIEW_VIEW}),
+                self._get("/export", {"t": ticker, "v": SCREENER_FINANCIAL_VIEW}),
+            )
+            data = parse_overview_export(overview.data["body"], financial.data["body"], ticker)
             return Payload(
-                parse_overview(raw.data["body"], ticker),
-                fetched_at=raw.fetched_at,
+                data,
+                fetched_at=min(overview.fetched_at, financial.fetched_at),
                 warnings=[
-                    "Overview metrics have individual publication schedules; retrieval time is not their publication time."
+                    "Overview metrics have individual publication schedules; retrieval time is not their publication time.",
+                    "Authenticated screener exports do not include company descriptions or named institutional holders; these fields are unavailable, not evidence of no holdings.",
                 ],
             )
 
         return await self.cache.fetch(
-            "overview", {"ticker": ticker}, load, OVERVIEW_CACHE_SECONDS, OVERVIEW_CACHE_SECONDS
+            "overview_export",
+            {"ticker": ticker},
+            load,
+            OVERVIEW_CACHE_SECONDS,
+            OVERVIEW_CACHE_SECONDS,
         )
 
     async def quote(self, ticker: str) -> CachedResult:
@@ -264,7 +281,7 @@ class FinvizProvider:
 
         async def load() -> Payload:
             """Select the latest valid intraday bar and validate its source timestamp."""
-            raw = await self._get("/quote_export.ashx", {"t": ticker, "p": "i5", "r": "d5"})
+            raw = await self._get("/quote_export", {"t": ticker, "p": "i5", "r": "d5"})
             records = csv_records(raw.data["body"])
             valid = []
             for row in records:
@@ -305,7 +322,7 @@ class FinvizProvider:
 
         async def load() -> Payload:
             """Validate the provider-native financial statement response."""
-            raw = await self._get("/api/statement.ashx", {"t": ticker, "so": "R", "s": codes[kind]})
+            raw = await self._get("/api/statement", {"t": ticker, "so": "R", "s": codes[kind]})
             try:
                 body = json.loads(raw.data["body"])
                 data = body["data"]
@@ -334,7 +351,7 @@ class FinvizProvider:
         async def load() -> Payload:
             """Normalize bounded headline records and mark external text as untrusted."""
             params = {"v": "3", "t": ticker} if ticker else {"v": "1", "c": "1"}
-            raw = await self._get("/news_export.ashx", params)
+            raw = await self._get("/news_export", params)
             rows = csv_records(raw.data["body"])
             items = []
             for row in rows[:MAX_NEWS_ITEMS]:
@@ -385,7 +402,12 @@ def parse_bar_time(value: str) -> datetime | None:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         parsed = None
-        for pattern in ("%m/%d/%Y %I:%M:%S %p", "%m/%d/%Y %H:%M", "%Y-%m-%d %H:%M:%S"):
+        for pattern in (
+            "%m/%d/%Y %I:%M %p",
+            "%m/%d/%Y %I:%M:%S %p",
+            "%m/%d/%Y %H:%M",
+            "%Y-%m-%d %H:%M:%S",
+        ):
             try:
                 parsed = datetime.strptime(value, pattern)
                 break

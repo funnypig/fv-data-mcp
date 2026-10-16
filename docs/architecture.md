@@ -28,6 +28,21 @@ Not everything is free while compute sleeps: registry storage, retained logs, se
 
 ## Source caching, not only tool caching
 
+Finviz requests use authenticated export endpoints, not browser stock pages:
+`/export/options`, `/quote_export`, `/api/statement`, `/news_export`, and `/export`.
+Expiration discovery reads the all-expiration options CSV and cross-checks listed
+dates against contract symbols; it never invents a Friday schedule. This discovery
+download is bounded by the same response-size limit and cached request coordination.
+Overview combines screener views 111 and 161 (company/valuation and financial metrics).
+Descriptions and named institutional holders are unavailable from these exports and
+are explicitly reported as such. Missing dividend yield remains unknown, never zero.
+Intraday export timestamps without a timezone are interpreted in America/New_York,
+including the provider's minute-resolution AM/PM format.
+HTTP redirects remain blocked (including cross-origin redirects) and are reported as
+`provider_endpoint_changed`, not invalid credentials. A 401/403 means upstream access
+was denied; it can reflect credentials or endpoint entitlement. Credentials are sent
+only to the fixed Elite origin, never forwarded to redirected public pages.
+
 `get_option_chain`, `get_max_pain`, `get_gamma_exposure`, `get_option_metrics` and `get_options_summary` all read the same `FinvizProvider.chain(ticker, expiration)` cache. Filters run on the cached full chain; changing a display filter does not create another provider request. Fundamentals reused for dividend input share their own cache.
 
 Below normalized datasets, `FinvizProvider._get` caches complete successful HTTP bodies

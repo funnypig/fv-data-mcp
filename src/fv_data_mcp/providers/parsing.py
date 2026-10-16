@@ -5,7 +5,7 @@ import io
 import json
 import math
 import re
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
@@ -125,6 +125,70 @@ def parse_chain(text: str, ticker: str, expiration: date) -> Chain:
         rejected_rows=rejected,
         warnings=warnings,
     )
+
+
+def parse_export_expirations(text: str, ticker: str) -> list[date]:
+    """Extract listed dates from the all-expiration export, checking OCC dates and roots."""
+    rows = csv_records(text)
+    header = next(csv.reader(io.StringIO(text.lstrip("\ufeff"))), [])
+    if not {"Contract Name", "Expiry"}.issubset(field.strip() for field in header):
+        raise ResearchError(
+            "provider_schema_changed", "Option export expiration columns are missing."
+        )
+    expirations = set()
+    for row in rows:
+        symbol = (row.get("Contract Name") or "").replace(" ", "")
+        match = re.fullmatch(r"([A-Z0-9. -]+)(\d{6})[CP]\d{8}", symbol)
+        try:
+            if match is None:
+                raise ValueError
+            root, encoded = match.groups()
+            if root.replace(".", "-") != ticker.replace(".", "-"):
+                continue
+            expiration = datetime.strptime(row.get("Expiry") or "", "%m/%d/%Y").date()
+            contract_expiration = date(2000 + int(encoded[:2]), int(encoded[2:4]), int(encoded[4:]))
+            if expiration != contract_expiration:
+                raise ValueError
+            expirations.add(expiration)
+        except ValueError:
+            raise ResearchError(
+                "provider_schema_changed",
+                "Option export contains inconsistent expiration metadata.",
+            ) from None
+    if rows and not expirations:
+        raise ResearchError(
+            "provider_schema_changed", "Option export has no matching ticker contracts."
+        )
+    return sorted(expirations)
+
+
+def parse_overview_export(overview: str, financial: str, ticker: str) -> dict[str, Any]:
+    """Merge single-ticker exports and distinguish unavailable profile fields from zero values."""
+    metrics = {}
+    for text in (overview, financial):
+        rows = csv_records(text)
+        if not rows:
+            raise ResearchError(
+                "not_found", "Finviz did not return this ticker in the screener export."
+            )
+        if len(rows) != 1 or rows[0].get("Ticker") != ticker:
+            raise ResearchError(
+                "provider_schema_changed", "Finviz screener returned unexpected ticker rows."
+            )
+        metrics.update(
+            {key: value for key, value in rows[0].items() if key not in {"No.", "Ticker"}}
+        )
+    dividend = metrics.get("Dividend Yield")
+    dividend_yield = number(dividend) if dividend and dividend.endswith("%") else None
+    if dividend_yield is not None and not 0 <= dividend_yield <= 1:
+        dividend_yield = None
+    return {
+        "ticker": ticker,
+        "description": None,
+        "metrics": metrics,
+        "institutional_ownership": [],
+        "indicated_dividend_yield": dividend_yield,
+    }
 
 
 def parse_expirations(html: str) -> list[date]:

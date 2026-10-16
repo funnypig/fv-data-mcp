@@ -169,7 +169,7 @@ async def test_transient_retry_releases_resources_and_meters_attempts(
         assert len(streams) == 2
 
 
-@pytest.mark.parametrize("status", [400, 401, 403, 404, 302])
+@pytest.mark.parametrize("status", [400, 401, 403, 404, 301, 302, 307, 308])
 async def test_permanent_http_failures_never_retry_or_cache_success(
     redis: FakeRedis, status: int
 ) -> None:
@@ -181,14 +181,20 @@ async def test_permanent_http_failures_never_retry_or_cache_success(
         """Count requests returning the selected permanent status."""
         nonlocal calls
         calls += 1
-        return httpx.Response(status, headers={"Location": "https://example.com"})
+        return httpx.Response(status, headers={"Location": "https://example.com/?auth=private-key"})
 
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(respond), follow_redirects=True
     ) as client:
         provider = FinvizProvider(client, cache, Limits(redis, cache.namespace), "key")
-        with pytest.raises(ResearchError):
+        with pytest.raises(ResearchError) as caught:
             await provider._get("/quote.ashx", {"t": "TEST"})
+        if 300 <= status < 400:
+            assert caught.value.code == "provider_endpoint_changed"
+        elif status in {401, 403}:
+            assert caught.value.code == "provider_auth_failed"
+        assert "private-key" not in str(caught.value)
+        assert "example.com" not in str(caught.value)
         assert calls == 1
         assert not await redis.keys("*:snapshot:*")
         assert not await redis.keys("*:lock")
