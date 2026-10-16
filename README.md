@@ -147,6 +147,7 @@ through the configured approval gate. Initial cloud provisioning remains a separ
 explicit operator step; `just setup` does not provision Azure resources.
 
 - [Azure, Auth0, Upstash and ChatGPT setup](docs/deployment.md)
+- [Authentication diagrams: identities, login and access grants](docs/authentication.md)
 - [Cache architecture, trust boundaries and costs](docs/architecture.md)
 - [Calculation methodology and limitations](docs/methodology.md)
 - [Operations, access administration, recovery and observability](docs/operations.md)

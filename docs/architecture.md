@@ -1,5 +1,8 @@
 # Architecture and trade-offs
 
+See [Authentication and access](authentication.md) for Mermaid diagrams explaining
+Auth0 accounts, OAuth clients, MCP users, Azure identities and membership grants.
+
 ```text
 ChatGPT ── OAuth code + PKCE ── Auth0
    │ bearer token

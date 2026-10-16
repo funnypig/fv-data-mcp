@@ -36,6 +36,12 @@ Record outputs: `publicUrl`, `registryName`, `registryServer`, `vaultName`, `sto
 
 ## 2. Configure Auth0
 
+Use an HTTPS tenant origin for `FV_AUTH0_ISSUER` / the `auth0Issuer` deployment parameter.
+Both `https://YOUR-TENANT.eu.auth0.com` and `https://YOUR-TENANT.eu.auth0.com/` work:
+the application adds a missing trailing slash before token verification, discovery,
+and membership lookups (including CLI grants). Token issuer validation remains exact;
+paths, credentials, query strings and fragments are not accepted in the configured origin.
+
 1. Create an Auth0 API with identifier **exactly** `<publicUrl>/mcp`, RS256 signing, and permission `research:read`. Configure short access-token lifetime (e.g. one hour).
 2. Enable the **Resource Parameter Compatibility Profile** for MCP resource indicators. Clients send `resource`; the resulting token must have the MCP API audience, not only `/userinfo`. Check Auth0 authorization-server discovery supports PKCE S256 and issuer identification expected by the client.
 3. Pre-register a Regular Web Application for the ChatGPT connection (authorization-code flow with PKCE). Use the exact callback URL shown by your ChatGPT connection UI/current documentation; do not guess or wildcard it. Configure the supported token-endpoint authentication method consistently with the client credentials entered in ChatGPT. Refresh tokens/offline access are optional; if enabled, configure rotation and reuse detection.
@@ -105,19 +111,33 @@ uv sync --frozen
 uv run pytest
 uv run ruff check .
 uv run pip-audit --local
-az acr build --registry REGISTRY_NAME --image fv-data-mcp:RELEASE_ID .
-az acr repository show --name REGISTRY_NAME --image fv-data-mcp:RELEASE_ID --query digest -o tsv
+REGISTRY=YOUR_REGISTRY_NAME
+RELEASE_ID=$(git rev-parse HEAD)
+SERVER=$(az acr show --name "$REGISTRY" --query loginServer -o tsv)
+az acr login --name "$REGISTRY"
+docker build --platform linux/amd64 --tag "$SERVER/fv-data-mcp:$RELEASE_ID" .
+docker push "$SERVER/fv-data-mcp:$RELEASE_ID"
+DIGEST=$(az acr repository show --name "$REGISTRY" --image "fv-data-mcp:$RELEASE_ID" --query digest -o tsv)
+[[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
 az deployment group what-if -g fv-data-mcp-prod -f infra/app.bicep \
-  -p prefix=fvdata imageDigest=sha256:YOUR_DIGEST auth0Issuer=https://YOUR-TENANT.eu.auth0.com/
+  -p prefix=fvdata imageDigest="$DIGEST" auth0Issuer=https://YOUR-TENANT.eu.auth0.com/
 az deployment group create -g fv-data-mcp-prod -f infra/app.bicep \
-  -p prefix=fvdata imageDigest=sha256:YOUR_DIGEST auth0Issuer=https://YOUR-TENANT.eu.auth0.com/ --name release-1
+  -p prefix=fvdata imageDigest="$DIGEST" auth0Issuer=https://YOUR-TENANT.eu.auth0.com/ --name release-1
 ```
 
 Always deploy an immutable registry digest, not `latest`. Templates use a user-assigned identity for ACR image pull, Key Vault references and Table reads. No market data is fetched at startup. The initial request may cold-start Python/scientific dependencies; assess client timeout behavior before deciding whether to pay for `minReplicas=1`.
 
+Builds run on your local Docker engine or the GitHub Actions runner, not ACR Tasks.
+If `az acr build` fails with `TasksOperationsNotAllowed`, use the Docker build/push
+steps above: they do not call the restricted Tasks service. This still requires a
+working Docker engine and registry push/pull permissions for the operator or deployment
+identity (for example, registry-scoped `AcrPush` in RBAC-only mode). If you specifically
+need Azure-hosted ACR Tasks, request access through Azure support instead. See
+[Microsoft's Docker push/pull guide](https://learn.microsoft.com/en-us/azure/container-registry/container-registry-get-started-docker-cli).
+
 Smoke-check HTTPS discovery and health. Anonymous POST `/mcp` must return 401 with the `WWW-Authenticate` resource metadata link. Readiness probes use Redis but are not an end-to-end authenticated acceptance test.
 
-For GitHub deployment, configure a protected `production` environment with reviewers and main-branch-only deployment. Create an Entra workload identity federated to `repo:OWNER/REPO:environment:production`, audience `api://AzureADTokenExchange`. Grant scoped deployment/image-build permissions, not subscription Owner; the release workflow does not change foundation RBAC. Set environment variables `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `AZURE_RESOURCE_GROUP`, `RESOURCE_PREFIX`, `AZURE_REGISTRY`, `AUTH0_ISSUER`. The manual workflow runs CI first, builds in ACR, deploys a digest, then checks discovery and the anonymous-auth boundary. Pin Actions and container base images to reviewed digests/commit SHAs under your supply-chain policy before enabling unattended release. Dependabot tracks updates.
+For GitHub deployment, configure a protected `production` environment with reviewers and main-branch-only deployment. Create an Entra workload identity federated to `repo:OWNER/REPO:environment:production`, audience `api://AzureADTokenExchange`. Grant scoped deployment and registry push/pull permissions, not subscription Owner; the release workflow does not change foundation RBAC. Set environment variables `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `AZURE_RESOURCE_GROUP`, `RESOURCE_PREFIX`, `AZURE_REGISTRY`, `AUTH0_ISSUER`. The manual workflow runs CI first, builds on the GitHub runner, pushes to ACR, scans the exact release digest, deploys that digest, then checks discovery and the anonymous-auth boundary. Pin Actions and container base images to reviewed digests/commit SHAs under your supply-chain policy before enabling unattended release. Dependabot tracks updates.
 
 ## 5. Grant the owner and connect ChatGPT
 

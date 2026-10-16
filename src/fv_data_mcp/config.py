@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import ClassVar, Literal
 from urllib.parse import urlsplit
 
-from pydantic import Field, SecretStr, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -40,6 +40,25 @@ class Settings(BaseSettings):
     applicationinsights_connection_string: SecretStr = SecretStr("")
     trace_sample_ratio: float = Field(default=0.1, ge=0, le=1)
 
+    @field_validator("auth0_issuer")
+    @classmethod
+    def normalize_auth0_issuer(cls, value: str) -> str:
+        """Canonicalize a configured Auth0 origin for tokens, discovery and membership keys."""
+        if not value:
+            return value
+        issuer = urlsplit(value)
+        if (
+            issuer.scheme != "https"
+            or not issuer.hostname
+            or issuer.path not in {"", "/"}
+            or issuer.query
+            or issuer.fragment
+            or issuer.username
+            or issuer.password
+        ):
+            raise ValueError("auth0_issuer must be an HTTPS Auth0 tenant origin")
+        return value if value.endswith("/") else value + "/"
+
     @property
     def resource_url(self) -> str:
         """Return the canonical MCP resource URL used as the OAuth audience."""
@@ -69,21 +88,10 @@ class Settings(BaseSettings):
             if len(self.dev_token.get_secret_value()) < 24:
                 raise ValueError("dev_token must contain at least 24 characters")
         else:
-            issuer = urlsplit(self.auth0_issuer)
-            if (
-                issuer.scheme != "https"
-                or not issuer.hostname
-                or not self.auth0_issuer.endswith("/")
-            ):
-                raise ValueError("auth0_issuer must be an HTTPS issuer ending in /")
-            if (
-                issuer.path != "/"
-                or issuer.query
-                or issuer.fragment
-                or issuer.username
-                or issuer.password
-            ):
-                raise ValueError("auth0_issuer must be an Auth0 tenant origin")
+            if not self.auth0_issuer:
+                raise ValueError(
+                    "auth0_issuer is required when development authentication is disabled"
+                )
             if self.auth0_audience != self.resource_url:
                 raise ValueError("auth0_audience must equal public_url + /mcp")
         if self.environment == "production":

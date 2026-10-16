@@ -15,8 +15,10 @@ from fv_data_mcp.config import Settings
 from fv_data_mcp.errors import ResearchError
 
 
-@pytest.fixture
-def oauth() -> tuple[Authenticator, Callable[..., str], list[httpx.Request]]:
+@pytest.fixture(params=["https://tenant.auth0.com/", "https://tenant.auth0.com"])
+def oauth(
+    request: pytest.FixtureRequest,
+) -> tuple[Authenticator, Callable[..., str], list[httpx.Request]]:
     """Build an RSA-signed token factory, mocked JWKS endpoint, and invited identity."""
     private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     public = json.loads(jwt.algorithms.RSAAlgorithm.to_jwk(private.public_key())) | {
@@ -25,7 +27,7 @@ def oauth() -> tuple[Authenticator, Callable[..., str], list[httpx.Request]]:
     settings = Settings(
         _env_file=None,
         cursor_secret="s" * 32,
-        auth0_issuer="https://tenant.auth0.com/",
+        auth0_issuer=request.param,
         auth0_audience="http://localhost:8000/mcp",
     )
     calls = []
@@ -37,13 +39,13 @@ def oauth() -> tuple[Authenticator, Callable[..., str], list[httpx.Request]]:
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
     members = Memberships(settings)
-    members.memory[Principal(settings.auth0_issuer, "auth0|owner").key] = True
+    members.memory[Principal("https://tenant.auth0.com/", "auth0|owner").key] = True
     auth = Authenticator(settings, client, members)
 
     def token(**overrides: Any) -> str:
         """Sign standard test claims with optional adversarial claim overrides."""
         claims = {
-            "iss": settings.auth0_issuer,
+            "iss": "https://tenant.auth0.com/",
             "aud": settings.auth0_audience,
             "sub": "auth0|owner",
             "scope": "research:read",
@@ -67,6 +69,7 @@ async def test_valid_auth_and_immediate_suspension(
     with pytest.raises(ResearchError, match="suspended"):
         await auth.authenticate(token())
     assert len(calls) == 1
+    assert str(calls[0].url) == "https://tenant.auth0.com/.well-known/jwks.json"
 
 
 @pytest.mark.parametrize(
@@ -74,6 +77,7 @@ async def test_valid_auth_and_immediate_suspension(
     [
         {"aud": "other"},
         {"iss": "https://attacker.example/"},
+        {"iss": "https://tenant.auth0.com"},
         {"exp": 1},
         {"scope": "openid"},
         {"sub": "auth0|uninvited"},
