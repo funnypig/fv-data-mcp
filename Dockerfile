@@ -1,4 +1,4 @@
-FROM ghcr.io/astral-sh/uv:0.7.0 AS uv
+FROM ghcr.io/astral-sh/uv:0.13.5 AS uv
 FROM python:3.12-slim AS build
 COPY --from=uv /uv /usr/local/bin/uv
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
