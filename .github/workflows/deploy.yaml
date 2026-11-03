@@ -40,7 +40,7 @@ jobs:
           echo "IMAGE_REF=$SERVER/fv-data-mcp@$DIGEST" >> "$GITHUB_ENV"
           docker pull "$SERVER/fv-data-mcp@$DIGEST"
       - name: Scan the exact release digest
-        uses: aquasecurity/trivy-action@0.33.1
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ env.IMAGE_REF }}
           severity: CRITICAL,HIGH
